@@ -4,6 +4,7 @@ import numpy as np
 import optuna
 from sklearn.base import clone
 from sklearn.preprocessing import StandardScaler
+from sklearn.utils.class_weight import compute_sample_weight
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 import xgboost as xgb
 import lightgbm as lgb
@@ -31,7 +32,8 @@ def _rf_objective(trial, X, y, t1, n_splits, pct_embargo, config):
         "max_features": trial.suggest_categorical("max_features", ["sqrt", "log2", None]),
     }
     model = RandomForestClassifier(
-        **params, random_state=config["random_state"], n_jobs=config["n_jobs"]
+        **params, class_weight="balanced",
+        random_state=config["random_state"], n_jobs=config["n_jobs"],
     )
     return _cv_score(model, X, y, t1, n_splits, pct_embargo)
 
@@ -79,7 +81,8 @@ def _lgb_objective(trial, X, y, t1, n_splits, pct_embargo, config):
         "min_child_samples": trial.suggest_int("min_child_samples", 5, 50),
     }
     model = lgb.LGBMClassifier(
-        **params, random_state=config["random_state"],
+        **params, is_unbalance=True,
+        random_state=config["random_state"],
         n_jobs=config["n_jobs"], verbose=-1,
     )
     return _cv_score(model, X, y, t1, n_splits, pct_embargo)
@@ -94,7 +97,8 @@ def _catboost_objective(trial, X, y, t1, n_splits, pct_embargo, config):
         "subsample": trial.suggest_float("subsample", 0.5, 1.0),
     }
     model = CatBoostClassifier(
-        **params, random_state=config["random_state"],
+        **params, auto_class_weights="Balanced",
+        random_state=config["random_state"],
         verbose=False, thread_count=config["n_jobs"],
     )
     return _cv_score(model, X, y, t1, n_splits, pct_embargo)
@@ -154,6 +158,7 @@ def _cv_score(model, X, y, t1, n_splits, pct_embargo):
 
     pkf = PurgedKFold(n_splits=n_splits, t1=t1, pct_embargo=pct_embargo)
     needs_scale = isinstance(model, (SklearnMLPClassifier, SklearnLSTMClassifier))
+    needs_sw = isinstance(model, (xgb.XGBClassifier, GradientBoostingClassifier))
     accuracies = []
 
     for train_idx, test_idx in pkf.split(X):
@@ -166,7 +171,11 @@ def _cv_score(model, X, y, t1, n_splits, pct_embargo):
             X_tr = scaler.fit_transform(X_tr)
             X_te = scaler.transform(X_te)
 
-        model_clone.fit(X_tr, y_train_bin)
+        fit_kw = {}
+        if needs_sw:
+            fit_kw["sample_weight"] = compute_sample_weight("balanced", y_train_bin)
+
+        model_clone.fit(X_tr, y_train_bin, **fit_kw)
 
         y_pred = model_clone.predict(X_te)
         metrics = calculate_metrics(y.iloc[test_idx], y_pred * 2 - 1)

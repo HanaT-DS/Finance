@@ -6,6 +6,7 @@ from sklearn.dummy import DummyClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.preprocessing import StandardScaler
+from sklearn.utils.class_weight import compute_sample_weight
 from sklearn.metrics import (
     accuracy_score,
     precision_score,
@@ -66,6 +67,7 @@ def create_models(config=None, hyperparams=None):
             max_depth=rf_p.get("max_depth", None),
             min_samples_split=rf_p.get("min_samples_split", 2),
             min_samples_leaf=rf_p.get("min_samples_leaf", 1),
+            class_weight="balanced",
             random_state=rs,
             n_jobs=n_jobs,
             oob_score=True,
@@ -99,6 +101,7 @@ def create_models(config=None, hyperparams=None):
             subsample=lgb_p.get("subsample", 0.8),
             colsample_bytree=lgb_p.get("colsample_bytree", 0.8),
             min_child_samples=lgb_p.get("min_child_samples", 20),
+            is_unbalance=True,
             random_state=rs,
             n_jobs=n_jobs,
             verbose=-1,
@@ -109,6 +112,7 @@ def create_models(config=None, hyperparams=None):
             learning_rate=cb_p.get("learning_rate", 0.03),
             subsample=cb_p.get("subsample", 0.8),
             min_data_in_leaf=cb_p.get("min_data_in_leaf", 1),
+            auto_class_weights="Balanced",
             random_state=rs,
             verbose=False,
             thread_count=n_jobs,
@@ -303,10 +307,20 @@ def _needs_scaling(model):
     return isinstance(model, (SklearnMLPClassifier, SklearnLSTMClassifier))
 
 
+def _needs_sample_weight(model):
+    """Check if model needs external sample_weight for class balancing.
+
+    XGBoost and GradientBoosting don't have a native 'class_weight' param,
+    so we pass balanced sample weights via fit().
+    """
+    return isinstance(model, (xgb.XGBClassifier, GradientBoostingClassifier))
+
+
 def _train_predict(model, X_train, y_train, X_test):
     """Clone, fit, predict (binary labels + probabilities).
 
     Applies StandardScaler automatically for DL models (MLP, LSTM).
+    Applies balanced sample_weight for XGBoost and GradientBoosting.
     """
     model_clone = clone(model)
     y_train_bin = (y_train == 1).astype(int)
@@ -318,7 +332,12 @@ def _train_predict(model, X_train, y_train, X_test):
         X_train = scaler.fit_transform(X_train)
         X_test = scaler.transform(X_test)
 
-    model_clone.fit(X_train, y_train_bin)
+    # Balanced sample weights for models without native class_weight
+    fit_kwargs = {}
+    if _needs_sample_weight(model_clone):
+        fit_kwargs["sample_weight"] = compute_sample_weight("balanced", y_train_bin)
+
+    model_clone.fit(X_train, y_train_bin, **fit_kwargs)
 
     y_pred = model_clone.predict(X_test)
     y_proba = (

@@ -5,7 +5,10 @@ import time
 import numpy as np
 import pandas as pd
 from sklearn.base import clone
+from sklearn.utils.class_weight import compute_sample_weight
+from sklearn.ensemble import GradientBoostingClassifier
 from scipy.stats import f_oneway
+import xgboost as xgb
 from statsmodels.stats.multicomp import MultiComparison
 
 from .config import CONFIG, MODEL_NAMES, STOCK_UNIVERSE
@@ -25,19 +28,16 @@ from .models import (
 # K-Fold comparison (standard vs purged)
 # ---------------------------------------------------------------------------
 
-def run_kfold_comparison(ticker, windows, stock_data, config=None, n_splits=5, pct_embargo=0.01):
-    """Compare Standard K-Fold vs Purged K-Fold for one stock across windows.
-
-    Returns
-    -------
-    pd.DataFrame with columns Ticker, Window, Model, Method, and metrics.
-    """
+def run_kfold_comparison(ticker, windows, stock_data, config=None, n_splits=5, pct_embargo=0.01,
+                         feature_cols=None):
+    """Compare Standard K-Fold vs Purged K-Fold for one stock across windows."""
     if config is None:
         config = CONFIG
     rows = []
 
     for window in windows:
-        X, y, t1 = prepare_features_with_t1(stock_data[ticker], window, config)
+        X, y, t1 = prepare_features_with_t1(stock_data[ticker], window, config,
+                                              feature_cols=feature_cols)
 
         standard = evaluate_with_standard_kfold(
             X.copy(), y.copy(), create_models(config),
@@ -72,18 +72,14 @@ def run_kfold_comparison(ticker, windows, stock_data, config=None, n_splits=5, p
 # Detailed single-stock analysis
 # ---------------------------------------------------------------------------
 
-def run_detailed_single_stock_analysis(ticker, window, stock_data, config=None):
-    """Temporal-split evaluation + feature importances for one stock/window.
-
-    Returns
-    -------
-    dict with keys: ticker, window, results, trained_models, split,
-    feature_names, feature_importances.
-    """
+def run_detailed_single_stock_analysis(ticker, window, stock_data, config=None,
+                                        feature_cols=None):
+    """Temporal-split evaluation + feature importances for one stock/window."""
     if config is None:
         config = CONFIG
 
-    X, y, t1 = prepare_features_with_t1(stock_data[ticker], window, config)
+    X, y, t1 = prepare_features_with_t1(stock_data[ticker], window, config,
+                                          feature_cols=feature_cols)
     models = create_models(config)
     results, trained_models, split = evaluate_with_temporal_split(X, y, t1, models, config)
 
@@ -118,14 +114,16 @@ def run_detailed_single_stock_analysis(ticker, window, stock_data, config=None):
 # Single-stock multi-window
 # ---------------------------------------------------------------------------
 
-def run_single_stock_multiwindow_analysis(ticker, windows, stock_data, config=None):
+def run_single_stock_multiwindow_analysis(ticker, windows, stock_data, config=None,
+                                           feature_cols=None):
     """Temporal-split evaluation across multiple windows for one stock."""
     if config is None:
         config = CONFIG
     rows = []
 
     for window in windows:
-        X, y, t1 = prepare_features_with_t1(stock_data[ticker], window, config)
+        X, y, t1 = prepare_features_with_t1(stock_data[ticker], window, config,
+                                              feature_cols=feature_cols)
         models = create_models(config)
         eval_results, _, _ = evaluate_with_temporal_split(X, y, t1, models, config)
 
@@ -149,13 +147,9 @@ def run_single_stock_multiwindow_analysis(ticker, windows, stock_data, config=No
 # All stocks — Purged K-Fold
 # ---------------------------------------------------------------------------
 
-def run_all_stocks_purged_cv(all_tickers, windows, stock_data, config=None, n_splits=5, pct_embargo=0.01):
-    """Purged K-Fold CV for every (ticker, window) combination.
-
-    Returns
-    -------
-    (pd.DataFrame, float) — results and execution time in seconds.
-    """
+def run_all_stocks_purged_cv(all_tickers, windows, stock_data, config=None, n_splits=5,
+                              pct_embargo=0.01, feature_cols=None):
+    """Purged K-Fold CV for every (ticker, window) combination."""
     if config is None:
         config = CONFIG
     rows = []
@@ -164,7 +158,8 @@ def run_all_stocks_purged_cv(all_tickers, windows, stock_data, config=None, n_sp
     for ticker in all_tickers:
         for window in windows:
             try:
-                X, y, t1 = prepare_features_with_t1(stock_data[ticker], window, config)
+                X, y, t1 = prepare_features_with_t1(stock_data[ticker], window, config,
+                                                      feature_cols=feature_cols)
                 models = create_models(config)
                 pkf = PurgedKFold(n_splits=n_splits, t1=t1, pct_embargo=pct_embargo)
 
@@ -173,7 +168,10 @@ def run_all_stocks_purged_cv(all_tickers, windows, stock_data, config=None, n_sp
                     for train_idx, test_idx in pkf.split(X):
                         model_clone = clone(model)
                         y_train_bin = (y.iloc[train_idx] == 1).astype(int)
-                        model_clone.fit(X.iloc[train_idx], y_train_bin)
+                        fit_kw = {}
+                        if isinstance(model, (xgb.XGBClassifier, GradientBoostingClassifier)):
+                            fit_kw["sample_weight"] = compute_sample_weight("balanced", y_train_bin)
+                        model_clone.fit(X.iloc[train_idx], y_train_bin, **fit_kw)
 
                         y_pred = model_clone.predict(X.iloc[test_idx])
                         y_proba = (
@@ -209,12 +207,7 @@ def run_all_stocks_purged_cv(all_tickers, windows, stock_data, config=None, n_sp
 # ---------------------------------------------------------------------------
 
 def compute_sector_statistics(results_df, stock_universe=None):
-    """Aggregate accuracy stats by sector and model.
-
-    Returns
-    -------
-    (sector_df, results_with_sector)
-    """
+    """Aggregate accuracy stats by sector and model."""
     if stock_universe is None:
         stock_universe = STOCK_UNIVERSE
 
@@ -351,13 +344,9 @@ def create_sector_portfolio(sector_stocks, stock_data, start_date=None, end_date
     return portfolio_df
 
 
-def run_portfolio_analysis(stock_universe, stock_data, config=None, windows=None, n_splits=5, pct_embargo=0.01):
-    """Build sector portfolios, compute stats, and evaluate prediction models.
-
-    Returns
-    -------
-    (sector_portfolios, portfolio_results_df, portfolio_stats_df)
-    """
+def run_portfolio_analysis(stock_universe, stock_data, config=None, windows=None, n_splits=5,
+                            pct_embargo=0.01, feature_cols=None):
+    """Build sector portfolios, compute stats, and evaluate prediction models."""
     if config is None:
         config = CONFIG
     if windows is None:
@@ -389,7 +378,8 @@ def run_portfolio_analysis(stock_universe, stock_data, config=None, windows=None
     for sector, pdf in sector_portfolios.items():
         for window in windows:
             try:
-                X, y, t1 = prepare_features_with_t1(pdf, window, config)
+                X, y, t1 = prepare_features_with_t1(pdf, window, config,
+                                                      feature_cols=feature_cols)
                 res = evaluate_with_purged_cv(X, y, t1, create_models(config), n_splits, pct_embargo, config)
                 for model_name, metrics in res.items():
                     pred_rows.append({
@@ -462,12 +452,7 @@ def compute_model_anova(results_df, portfolio_results_df=None):
 
 
 def compute_tukey_hsd(results_df, perform_test=True):
-    """Tukey HSD post-hoc test on model accuracies.
-
-    Returns
-    -------
-    (tukey_result, tukey_df, mean_accuracies) or None.
-    """
+    """Tukey HSD post-hoc test on model accuracies."""
     if not perform_test:
         return None
     try:
