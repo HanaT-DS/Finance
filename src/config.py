@@ -75,8 +75,14 @@ EXTENDED_FEATURE_COLS = [
     "CCI",
 ]
 
+# Change (Δ) features: 1-day change for each indicator — captures momentum dynamics
+CHANGE_FEATURE_COLS = [f"{col}_CHG" for col in EXTENDED_FEATURE_COLS]
+
 # Default feature set — use extended
 FEATURE_COLS = EXTENDED_FEATURE_COLS
+
+# DL-eligible windows (LSTM is expensive; limit to short horizons)
+DL_WINDOWS = [1, 2, 5]
 
 TREE_MODEL_NAMES = ["Random Forest", "XGBoost", "Gradient Boosting", "LightGBM", "CatBoost"]
 

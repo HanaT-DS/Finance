@@ -308,7 +308,7 @@ def plot_sector_heatmap(sector_df, sectors):
     plt.show()
 
 
-def plot_window_effect(window_df, windows):
+def plot_window_effect(window_df, windows, results_df=None):
     """Line plot with confidence bands + box plot for window effect."""
     fig, axes = plt.subplots(1, 2, figsize=(18, 7))
 
@@ -328,11 +328,24 @@ def plot_window_effect(window_df, windows):
     ax1.legend(fontsize=8)
     ax1.grid(True, alpha=0.3)
 
-    # Box plot
+    # Box plot — per-stock accuracy distribution by window
     ax2 = axes[1]
+    if results_df is not None and len(results_df) > 0:
+        box_data = []
+        box_labels = []
+        for w in sorted(windows):
+            wd = results_df[results_df["Window"] == w]
+            if len(wd) > 0:
+                box_data.append(wd["Accuracy"].values * 100)
+                box_labels.append(f"{w}d")
+        if box_data:
+            bp = ax2.boxplot(box_data, labels=box_labels, patch_artist=True)
+            colors_bp = plt.cm.YlOrRd(np.linspace(0.3, 0.9, len(box_data)))
+            for patch, c in zip(bp["boxes"], colors_bp):
+                patch.set_facecolor(c)
     ax2.set_title("Accuracy Distribution by Window")
     ax2.set_xlabel("Trading Window (days)")
-    ax2.set_ylabel("Average Accuracy (%)")
+    ax2.set_ylabel("Accuracy (%)")
     ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()

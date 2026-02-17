@@ -17,7 +17,7 @@ import pandas as pd
 import pywt
 from scipy.signal import savgol_filter as _savgol_filter
 
-from .config import CONFIG, FEATURE_COLS, ORIGINAL_FEATURE_COLS, EXTENDED_FEATURE_COLS
+from .config import CONFIG, FEATURE_COLS, ORIGINAL_FEATURE_COLS, EXTENDED_FEATURE_COLS, CHANGE_FEATURE_COLS
 from .indicators import calculate_all_indicators
 
 # Available smoothing methods
@@ -210,11 +210,42 @@ def create_target_labels(prices, window):
 
 
 # ---------------------------------------------------------------------------
+# Change (Δ) features
+# ---------------------------------------------------------------------------
+
+def add_change_features(df_indicators, base_cols=None):
+    """Add 1-day change (Δ) features for each indicator.
+
+    For each indicator X, computes X_CHG = X(t) - X(t-1).
+    This captures the *dynamics* of each indicator — whether it is rising,
+    falling, or flat — which tree-based models cannot infer from a single
+    snapshot.
+
+    Parameters
+    ----------
+    df_indicators : pd.DataFrame — DataFrame with indicator columns.
+    base_cols : list[str], optional — indicator columns to diff.
+        Defaults to EXTENDED_FEATURE_COLS.
+
+    Returns
+    -------
+    pd.DataFrame — copy of input with ``{col}_CHG`` columns appended.
+    """
+    if base_cols is None:
+        base_cols = EXTENDED_FEATURE_COLS
+    result = df_indicators.copy()
+    for col in base_cols:
+        if col in result.columns:
+            result[f"{col}_CHG"] = result[col].diff()
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Feature preparation
 # ---------------------------------------------------------------------------
 
 def prepare_features(df, window, config=None, feature_cols=None, extended=True,
-                     smoothing_method="wavelet"):
+                     smoothing_method="wavelet", include_changes=False):
     """Full preprocessing pipeline (improved).
 
     Key difference from Basak et al. (2019):
@@ -223,9 +254,10 @@ def prepare_features(df, window, config=None, feature_cols=None, extended=True,
 
     Steps:
       1. Technical indicators on RAW data
-      2. Smoothing on Close price (for labels only)
-      3. Binary target labels from smoothed Close
-      4. Drop NaN rows
+      2. (Optional) Add 1-day change features for each indicator
+      3. Smoothing on Close price (for labels only)
+      4. Binary target labels from smoothed Close
+      5. Drop NaN rows
 
     Parameters
     ----------
@@ -235,6 +267,7 @@ def prepare_features(df, window, config=None, feature_cols=None, extended=True,
     feature_cols : list[str], optional — override feature columns.
     extended : bool — if True, compute all 14 indicators; if False, only original 6.
     smoothing_method : str — "exponential", "wavelet", "savgol", or "none".
+    include_changes : bool — if True, append Δ features (1-day change per indicator).
 
     Returns
     -------
@@ -243,24 +276,37 @@ def prepare_features(df, window, config=None, feature_cols=None, extended=True,
     """
     if config is None:
         config = CONFIG
-    if feature_cols is None:
-        feature_cols = EXTENDED_FEATURE_COLS if extended else ORIGINAL_FEATURE_COLS
+
+    base_cols = EXTENDED_FEATURE_COLS if extended else ORIGINAL_FEATURE_COLS
 
     # Step 1: Indicators on RAW data (no smoothing applied to features)
     df_indicators = calculate_all_indicators(df, config, extended=extended)
 
-    # Step 2: Smoothing on Close ONLY for label creation
+    # Step 2: Add change features if requested
+    if include_changes:
+        df_indicators = add_change_features(df_indicators, base_cols=base_cols)
+
+    # Determine which columns to use
+    if feature_cols is not None:
+        use_cols = [c for c in feature_cols if c in df_indicators.columns]
+    elif include_changes:
+        change_cols = [f"{c}_CHG" for c in base_cols if f"{c}_CHG" in df_indicators.columns]
+        use_cols = base_cols + change_cols
+    else:
+        use_cols = base_cols
+
+    # Step 3: Smoothing on Close ONLY for label creation
     smoothed_close = apply_smoothing(df["Close"], method=smoothing_method, config=config)
 
-    # Step 3: Labels from smoothed Close
+    # Step 4: Labels from smoothed Close
     labels = create_target_labels(smoothed_close, window)
 
-    # Step 4: Combine and drop NaN
-    df_features = df_indicators[feature_cols].copy()
+    # Step 5: Combine and drop NaN
+    df_features = df_indicators[use_cols].copy()
     df_features["target"] = labels
     df_features = df_features.dropna()
 
-    X = df_features[feature_cols]
+    X = df_features[use_cols]
     y = df_features["target"]
     return X, y
 
@@ -298,7 +344,7 @@ def prepare_features_basak(df, window, config=None, feature_cols=None, extended=
 
 
 def prepare_features_with_t1(df, window, config=None, feature_cols=None, extended=True,
-                              smoothing_method="wavelet"):
+                              smoothing_method="wavelet", include_changes=False):
     """Preprocessing pipeline extended with t1 series for Purged K-Fold CV.
 
     Returns
@@ -314,6 +360,7 @@ def prepare_features_with_t1(df, window, config=None, feature_cols=None, extende
         df, window, config,
         feature_cols=feature_cols, extended=extended,
         smoothing_method=smoothing_method,
+        include_changes=include_changes,
     )
 
     end_positions = np.minimum(np.arange(len(X.index)) + window, len(X.index) - 1)
