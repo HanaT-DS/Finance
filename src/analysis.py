@@ -73,15 +73,25 @@ def run_kfold_comparison(ticker, windows, stock_data, config=None, n_splits=5, p
 # ---------------------------------------------------------------------------
 
 def run_detailed_single_stock_analysis(ticker, window, stock_data, config=None,
-                                        feature_cols=None):
-    """Temporal-split evaluation + feature importances for one stock/window."""
+                                        feature_cols=None, n_splits=5, pct_embargo=0.01,
+                                        hyperparams=None):
+    """Purged K-Fold evaluation + temporal-split for visualizations.
+
+    Returns Purged K-Fold metrics as primary results, plus temporal-split
+    trained models for generating confusion matrices, ROC curves, etc.
+    """
     if config is None:
         config = CONFIG
 
     X, y, t1 = prepare_features_with_t1(stock_data[ticker], window, config,
                                           feature_cols=feature_cols)
-    models = create_models(config)
-    results, trained_models, split = evaluate_with_temporal_split(X, y, t1, models, config)
+    models = create_models(config, hyperparams=hyperparams)
+
+    # Primary evaluation: Purged K-Fold CV
+    purged_results = evaluate_with_purged_cv(X, y, t1, models, n_splits, pct_embargo, config)
+
+    # Temporal split: only for visualizations (trained models, predictions)
+    _, trained_models, split = evaluate_with_temporal_split(X, y, t1, models, config)
 
     feature_names = list(X.columns)
     feature_importances = {}
@@ -102,7 +112,7 @@ def run_detailed_single_stock_analysis(ticker, window, stock_data, config=None,
     return {
         "ticker": ticker,
         "window": window,
-        "results": results,
+        "results": purged_results,
         "trained_models": trained_models,
         "split": split,
         "feature_names": feature_names,
@@ -115,8 +125,9 @@ def run_detailed_single_stock_analysis(ticker, window, stock_data, config=None,
 # ---------------------------------------------------------------------------
 
 def run_single_stock_multiwindow_analysis(ticker, windows, stock_data, config=None,
-                                           feature_cols=None):
-    """Temporal-split evaluation across multiple windows for one stock."""
+                                           feature_cols=None, n_splits=5, pct_embargo=0.01,
+                                           hyperparams=None):
+    """Purged K-Fold evaluation across multiple windows for one stock."""
     if config is None:
         config = CONFIG
     rows = []
@@ -124,8 +135,8 @@ def run_single_stock_multiwindow_analysis(ticker, windows, stock_data, config=No
     for window in windows:
         X, y, t1 = prepare_features_with_t1(stock_data[ticker], window, config,
                                               feature_cols=feature_cols)
-        models = create_models(config)
-        eval_results, _, _ = evaluate_with_temporal_split(X, y, t1, models, config)
+        models = create_models(config, hyperparams=hyperparams)
+        eval_results = evaluate_with_purged_cv(X, y, t1, models, n_splits, pct_embargo, config)
 
         for model_name, metrics in eval_results.items():
             rows.append({
@@ -133,6 +144,7 @@ def run_single_stock_multiwindow_analysis(ticker, windows, stock_data, config=No
                 "Window": window,
                 "Model": model_name,
                 "Accuracy": metrics["accuracy"],
+                "Accuracy_Std": metrics.get("accuracy_std", 0),
                 "Precision": metrics["precision"],
                 "Recall": metrics["recall"],
                 "Specificity": metrics["specificity"],
@@ -148,7 +160,7 @@ def run_single_stock_multiwindow_analysis(ticker, windows, stock_data, config=No
 # ---------------------------------------------------------------------------
 
 def run_all_stocks_purged_cv(all_tickers, windows, stock_data, config=None, n_splits=5,
-                              pct_embargo=0.01, feature_cols=None):
+                              pct_embargo=0.01, feature_cols=None, hyperparams=None):
     """Purged K-Fold CV for every (ticker, window) combination."""
     if config is None:
         config = CONFIG
@@ -160,7 +172,7 @@ def run_all_stocks_purged_cv(all_tickers, windows, stock_data, config=None, n_sp
             try:
                 X, y, t1 = prepare_features_with_t1(stock_data[ticker], window, config,
                                                       feature_cols=feature_cols)
-                models = create_models(config)
+                models = create_models(config, hyperparams=hyperparams)
                 pkf = PurgedKFold(n_splits=n_splits, t1=t1, pct_embargo=pct_embargo)
 
                 for model_name, model in models.items():
@@ -345,7 +357,7 @@ def create_sector_portfolio(sector_stocks, stock_data, start_date=None, end_date
 
 
 def run_portfolio_analysis(stock_universe, stock_data, config=None, windows=None, n_splits=5,
-                            pct_embargo=0.01, feature_cols=None):
+                            pct_embargo=0.01, feature_cols=None, hyperparams=None):
     """Build sector portfolios, compute stats, and evaluate prediction models."""
     if config is None:
         config = CONFIG
@@ -380,7 +392,7 @@ def run_portfolio_analysis(stock_universe, stock_data, config=None, windows=None
             try:
                 X, y, t1 = prepare_features_with_t1(pdf, window, config,
                                                       feature_cols=feature_cols)
-                res = evaluate_with_purged_cv(X, y, t1, create_models(config), n_splits, pct_embargo, config)
+                res = evaluate_with_purged_cv(X, y, t1, create_models(config, hyperparams=hyperparams), n_splits, pct_embargo, config)
                 for model_name, metrics in res.items():
                     pred_rows.append({
                         "Sector": sector, "Window": window, "Model": model_name,
