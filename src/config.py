@@ -75,6 +75,9 @@ EXTENDED_FEATURE_COLS = [
     "CCI",
 ]
 
+# Change (Δ) features: 1-day change for each indicator — captures momentum dynamics
+CHANGE_FEATURE_COLS = [f"{col}_CHG" for col in EXTENDED_FEATURE_COLS]
+
 # Default feature set — use extended
 FEATURE_COLS = EXTENDED_FEATURE_COLS
 
