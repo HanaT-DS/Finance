@@ -330,19 +330,11 @@ def plot_window_effect(window_df, windows, results_df=None):
 
     # Box plot — per-stock accuracy distribution by window
     ax2 = axes[1]
-    if results_df is not None and len(results_df) > 0:
-        box_data = []
-        box_labels = []
-        for w in sorted(windows):
-            wd = results_df[results_df["Window"] == w]
-            if len(wd) > 0:
-                box_data.append(wd["Accuracy"].values * 100)
-                box_labels.append(f"{w}d")
-        if box_data:
-            bp = ax2.boxplot(box_data, labels=box_labels, patch_artist=True)
-            colors_bp = plt.cm.YlOrRd(np.linspace(0.3, 0.9, len(box_data)))
-            for patch, c in zip(bp["boxes"], colors_bp):
-                patch.set_facecolor(c)
+    box_data = [window_df[window_df["Window"] == w]["Avg_Accuracy"].values for w in windows]
+    bp = ax2.boxplot(box_data, tick_labels=[str(w) for w in windows], patch_artist=True)
+    for patch in bp["boxes"]:
+        patch.set_facecolor("#4CAF50")
+        patch.set_alpha(0.6)
     ax2.set_title("Accuracy Distribution by Window")
     ax2.set_xlabel("Trading Window (days)")
     ax2.set_ylabel("Accuracy (%)")

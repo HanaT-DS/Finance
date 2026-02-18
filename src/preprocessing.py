@@ -282,8 +282,11 @@ def prepare_features(df, window, config=None, feature_cols=None, extended=True,
     # Step 1: Indicators on RAW data (no smoothing applied to features)
     df_indicators = calculate_all_indicators(df, config, extended=extended)
 
-    # Step 2: Add change features if requested
-    if include_changes:
+    # Step 2: Add change features if requested or if feature_cols contains _CHG columns
+    needs_changes = include_changes or (
+        feature_cols is not None and any(c.endswith("_CHG") for c in feature_cols)
+    )
+    if needs_changes:
         df_indicators = add_change_features(df_indicators, base_cols=base_cols)
 
     # Determine which columns to use
